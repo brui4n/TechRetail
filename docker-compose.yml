@@ -1,0 +1,81 @@
+version: "3.8"
+
+services:
+  frontend:
+    # Usamos la imagen que construirás (asegúrate de cambiar "tu_usuario" en el despliegue)
+    image: ${DOCKER_USER:-tu_usuario}/techretail-frontend:latest
+    ports:
+      - "80:80"
+    networks:
+      - techretail_net
+    configs:
+      - source: nginx_config
+        target: /etc/nginx/conf.d/default.conf
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  backend:
+    # Usamos la imagen que construirás
+    image: ${DOCKER_USER:-tu_usuario}/techretail-backend:latest
+    networks:
+      - techretail_net
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+    secrets:
+      - db_password
+
+  database:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/db_password
+      MYSQL_DATABASE: techretail_db
+    networks:
+      - techretail_net
+    volumes:
+      - db_data:/var/lib/mysql
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    secrets:
+      - db_password
+
+  cache:
+    image: redis:7-alpine
+    networks:
+      - techretail_net
+    deploy:
+      replicas: 1
+
+  visualizer:
+    image: dockersamples/visualizer
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+networks:
+  techretail_net:
+    driver: overlay
+
+volumes:
+  db_data:
+
+secrets:
+  db_password:
+    external: true
+
+configs:
+  nginx_config:
+    file: ./frontend/nginx.conf

@@ -55,7 +55,7 @@ services:
       replicas: 1
 
   visualizer:
-    image: dockersamples/visualizer
+    image: bretfisher/visualizer
     ports:
       - "8080:8080"
     volumes:

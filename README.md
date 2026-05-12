@@ -1,81 +1,103 @@
-# TechRetail - Arquitectura Microservicios con Docker Swarm
+# TechRetail - Arquitectura de Microservicios con Docker Swarm en AWS
 
-Este proyecto es una implementación de una arquitectura de microservicios contenerizada para la tienda en línea "TechRetail", orquestada a través de **Docker Swarm**.
+Este proyecto implementa una arquitectura de microservicios escalable y de alta disponibilidad para la tienda "TechRetail", orquestada mediante **Docker Swarm** y desplegada en una infraestructura de nube en **Amazon Web Services (AWS)**.
+
+---
 
 ## 🏗️ Arquitectura del Sistema
 
-El sistema se compone de los siguientes servicios:
-1. **Frontend (Nginx):** Sirve una interfaz HTML/JS estática. Utiliza *Docker Configs* para inyectar su configuración. Desplegado con 3 réplicas.
-2. **Backend (Node.js):** API RESTful construida con Express. Conectada a MySQL y Redis. Desplegado con 2 réplicas.
-3. **Database (MySQL 8):** Base de datos relacional para persistir los productos. Utiliza *Docker Secrets* para credenciales.
-4. **Cache (Redis 7):** Caché en memoria para optimizar la carga de los productos más consultados.
-5. **Visualizer:** Herramienta gráfica para monitorizar los contenedores distribuidos en el clúster.
+El ecosistema se distribuye en 3 nodos (instancias EC2) y consta de:
+1.  **Frontend (Nginx):** Interfaz web con 3 réplicas (balanceo de carga).
+2.  **Backend (Node.js):** API REST con 2 réplicas.
+3.  **Database (MySQL 8):** Persistencia de datos con Docker Secrets.
+4.  **Cache (Redis 7):** Optimización de consultas con TTL de 15s.
+5.  **Visualizer:** Monitorización gráfica del clúster (Puerto 8080).
 
 ---
 
-## 🚀 Guía de Despliegue (Play with Docker)
+## 🚀 Guía de Despliegue Paso a Paso
 
-### 1. Preparación de Imágenes en Docker Hub (Requisito previo)
-Para que los nodos *Workers* puedan descargar tus imágenes personalizadas, debes construirlas y subirlas a Docker Hub.
+### Paso 1: Configuración de Red en AWS (VPC)
+Para que el clúster sea funcional, las instancias deben estar en la misma red con los puertos correctos abiertos.
 
-Ejecuta estos comandos en tu computadora local:
+1.  **Crear VPC:** Crea una VPC (ej. `10.0.0.0/16`).
+2.  **Internet Gateway:** Crea uno y adjúntalo a tu VPC.
+3.  **Subnets (Públicas):** Crea **2 subredes públicas** en diferentes Zonas de Disponibilidad (AZ). Es vital que sean públicas para que los nodos puedan descargar las imágenes desde Docker Hub sin necesidad de un NAT Gateway:
+    *   **Subnet-1:** Rango `10.0.1.0/24` en Zona `us-east-1a`.
+    *   **Subnet-2:** Rango `10.0.2.0/24` en Zona `us-east-1b`.
+    *   Habilita "Auto-assign public IPv4" en ambas.
+4.  **Security Group (Configuración Maestra):** Crea un grupo llamado `techretail-sg`. Debes configurar las **Reglas de Entrada (Inbound)** exactamente así:
+
+| Tipo | Protocolo | Puerto | Origen | Descripción |
+| :--- | :--- | :--- | :--- | :--- |
+| **SSH** | TCP | 22 | 0.0.0.0/0 | Acceso remoto |
+| **HTTP** | TCP | 80 | 0.0.0.0/0 | Tienda Web |
+| **Custom TCP** | TCP | 8080 | 0.0.0.0/0 | Visualizer |
+| **Custom TCP** | TCP | 2377 | 10.0.0.0/16 | Gestión de Swarm (Solo VPC) |
+| **Custom TCP** | TCP | 7946 | 10.0.0.0/16 | Comunicación Nodos (TCP) |
+| **Custom UDP** | UDP | 7946 | 10.0.0.0/16 | Comunicación Nodos (UDP) |
+| **Custom UDP** | UDP | 4789 | 10.0.0.0/16 | Red Overlay VXLAN |
+
+> **💡 Tip Profesional:** Para mayor facilidad en AWS, puedes configurar el "Origen" de los puertos de Swarm (2377, 7946, 4789) usando el ID del propio Security Group. Esto permite que las máquinas se hablen entre ellas sin restricciones.
+
+### Paso 2: Lanzamiento de Instancias EC2
+Para maximizar la disponibilidad, distribuiremos las máquinas entre las dos zonas:
+1.  **Instancia Manager:** Lanza una `t2.micro` (Ubuntu 22.04) en la **Subnet-1**.
+2.  **Instancias Workers:** Lanza dos `t2.micro` (Ubuntu 22.04) en la **Subnet-2**.
+3.  Asigna el Security Group `techretail-sg` a las tres instancias.
+
+### Paso 3: Instalación de Docker
+> **⚠️ Importante:** Para acceder a las máquinas mediante SSH, asegúrate de tener a mano tu par de claves (`.pem`) y ejecutar el comando:  
+> `ssh -i "tu-llave.pem" ubuntu@<IP_PUBLICA>`
+
+En las **3 máquinas**, ejecuta los comandos de instalación oficial:
 ```bash
-# Inicia sesión en Docker Hub
-docker login
-
-# Construir y subir imagen Frontend
-docker build -t TU_USUARIO_DOCKER/techretail-frontend ./frontend
-docker push TU_USUARIO_DOCKER/techretail-frontend
-
-# Construir y subir imagen Backend
-docker build -t TU_USUARIO_DOCKER/techretail-backend ./backend
-docker push TU_USUARIO_DOCKER/techretail-backend
+sudo apt-get update
+sudo apt-get install -y docker.io
+sudo systemctl start docker
+sudo usermod -aG docker $USER
+# Cierra sesión y vuelve a entrar para aplicar cambios de grupo
 ```
 
-### 2. Inicialización del Clúster Swarm
-1. Ingresa a [Play with Docker](https://labs.play-with-docker.com/).
-2. Crea **3 instancias** (Nodos).
-3. En el **Nodo 1 (Manager)**, inicializa el clúster:
-   ```bash
-   docker swarm init --advertise-addr <IP_NODO_1>
-   ```
-4. Copia el comando que genera (ej. `docker swarm join --token ...`) y pégalo en el **Nodo 2** y **Nodo 3** para unirlos como Workers.
+### Paso 4: Inicialización del Clúster Swarm
+1.  En el nodo **Manager**, inicializa el clúster:
+    ```bash
+    docker swarm init --advertise-addr <IP_PRIVADA_MANAGER>
+    ```
+2.  Copia el comando `docker swarm join --token ...` que aparece en pantalla.
+3.  Pega ese comando en **Worker-1** y **Worker-2**.
+4.  Verifica los nodos desde el Manager: `docker node ls`.
 
-### 3. Configuración y Despliegue (En el Nodo 1)
-Descarga este repositorio en el Nodo 1 y entra a la carpeta:
+### Paso 5: Preparación de Imágenes (Buildx)
+Si trabajas desde una Mac (M1/M2/M3), debes compilar para arquitectura Intel/AMD que usa AWS:
 ```bash
-git clone <URL_DE_TU_REPOSITORIO>
-cd techretail
+# Desde tu PC local
+docker buildx build --platform linux/amd64 -t brui4n/techretail-frontend ./frontend --push
+docker buildx build --platform linux/amd64 -t brui4n/techretail-backend ./backend --push
 ```
 
-Crea el secreto seguro para la base de datos:
-```bash
-echo "MiPasswordSegura123" | docker secret create db_password -
-```
-
-Exporta tu usuario de Docker (para que el `docker-compose.yml` sepa de dónde bajar las imágenes) y despliega el Stack:
-```bash
-export DOCKER_USER=TU_USUARIO_DOCKER
-docker stack deploy -c docker-compose.yml techretail
-```
-
-### 4. Monitoreo y Pruebas
-Verifica que los servicios están corriendo:
-```bash
-docker stack services techretail
-```
-
-Abre los puertos habilitados en la parte superior de Play with Docker:
-- **Puerto 80:** Tienda TechRetail.
-- **Puerto 8080:** Visualizer del clúster Swarm.
-
-Para probar el **escalado dinámico**, ejecuta:
-```bash
-docker service scale techretail_frontend=5
-```
+### Paso 6: Despliegue del Stack (En el Manager)
+1.  Clona el repositorio:
+    ```bash
+    git clone https://github.com/brui4n/TechRetail
+    cd TechRetail/techretail
+    ```
+2.  Crea el secreto para la base de datos:
+    ```bash
+    echo "MiPasswordSegura123" | docker secret create db_password -
+    ```
+3.  Despliega el sistema:
+    ```bash
+    export DOCKER_USER=brui4n
+    docker stack deploy -c docker-compose.yml techretail
+    ```
 
 ---
 
-## 🔒 Manejo de Configuraciones Sensibles
-- **Docker Secrets:** Se usó para la contraseña de la base de datos. El secreto `db_password` se inyecta de forma segura en MySQL y es leído por Node.js desde `/run/secrets/db_password`.
-- **Docker Configs:** Se usó para la configuración de Nginx. El archivo `frontend/nginx.conf` es leído por el manager y distribuido al clúster sin estar "quemado" en la imagen.
+## 📊 Monitoreo y Verificación
+
+*   **Estado de servicios:** `docker stack services techretail`
+*   **Acceso Web:** Ingresa a la IP Pública del **Manager** en el puerto `80`.
+*   **Visualizer:** Ingresa a la IP Pública del **Manager** en el puerto `8080`.
+
+> **Nota:** Al refrescar la tienda, verás que el campo "Contenedor" cambia entre diferentes IDs. Esto confirma que el balanceador de carga de Swarm está distribuyendo el tráfico entre las 3 réplicas del frontend.

@@ -3,7 +3,7 @@ version: "3.8"
 services:
   frontend:
     # Usamos la imagen que construirás (asegúrate de cambiar "tu_usuario" en el despliegue)
-    image: ${DOCKER_USER:-tu_usuario}/techretail-frontend:latest
+    image: ${DOCKER_USER:-brui4n}/techretail-frontend:latest
     ports:
       - "80:80"
     networks:
@@ -20,7 +20,7 @@ services:
 
   backend:
     # Usamos la imagen que construirás
-    image: ${DOCKER_USER:-tu_usuario}/techretail-backend:latest
+    image: ${DOCKER_USER:-brui4n}/techretail-backend:latest
     networks:
       - techretail_net
     deploy:
